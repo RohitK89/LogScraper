@@ -8,3 +8,8 @@
 .*.swp
 *~
 .*~
+
+# ignore output of build / tests
+.coverage
+build/*
+dist/*
