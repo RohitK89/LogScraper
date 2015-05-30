@@ -9,6 +9,12 @@ Things you can do:
   * Print regex matches to console
   * Search on gzipped files
 
+## Installation
+The easiest manner of installation is to grab the package from the PyPI repository.
+
+```
+pip install log_scraper
+```
 
 ## Usage
 #### Base Usage
