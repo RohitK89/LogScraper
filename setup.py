@@ -5,7 +5,7 @@ with open('README.txt') as file:
 
 setup(
     name                ='log_scraper',
-    version             ='0.9.4',
+    version             ='0.9.5',
     install_requires    =['paramiko'],
     package_dir         ={'': 'src'},
     packages            =find_packages('src'),

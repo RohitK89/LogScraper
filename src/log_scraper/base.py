@@ -51,6 +51,8 @@ import paramiko
 LOGGER = logging.getLogger('log_scraper')
 _LOGGING_SETUP_LOCK = threading.Lock()
 
+TIMEOUT = 99999999
+
 class LogScraperException(Exception):
     '''Base LogScraper Exception class'''
     pass
@@ -621,7 +623,15 @@ class LogScraper(object):
                 and not self._are_logs_archived(self._user_params.get(LSC.DATE, None))):
             if (self._optional_params.get(LSC.FORCE_COPY, False)
                 or socket.gethostname() != self._get_box_from_level(self._user_params.get(LSC.LEVEL, None))):
-                file_list = pool.map(self._get_log_file, self._file_list)
+                # Why is there a crazy timeout value at the end of this call?
+                # Because python has a bug in it that's been open for years and has not been fixed
+                # outside of v3.3 and above, wherein a KeyboardInterruption is never delivered
+                # when a thread is waiting for a condition, which leads to a hang
+                # if a user hits ^C.
+                # However, if you set a timeout on the call, Condition.wait() will receive
+                # the interrupt immediately.
+                # See: http://stackoverflow.com/questions/1408356/keyboard-interrupts-with-pythons-multiprocessing-pool
+                file_list = pool.map_async(self._get_log_file, self._file_list).get(TIMEOUT)
                 pool.close()
                 pool.join()
                 self._file_list = sorted(filter(lambda x: x != '', file_list))
@@ -634,7 +644,7 @@ class LogScraper(object):
 
         pool = Pool(processes=self._optional_params[LSC.PROCESSOR_COUNT])
         pool.daemon = True
-        results = pool.map(self._process_file, self._file_list)
+        results = pool.map_async(self._process_file, self._file_list).get(TIMEOUT)
         pool.close()
         pool.join()
         return results
