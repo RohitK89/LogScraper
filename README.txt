@@ -48,7 +48,7 @@ it what regexes to run and where to look for files. Eg.
     scraper.print_stats_per_file(data)
 
     # To view log lines matching the regex
-    scraper.view_regex_hits()
+    scraper.view_regex_matches(scraper.get_regex_matches())
 
 The real power, though, is in creating your own class deriving from
 LogScraper that presets the paths and the regexes to run so that anyone
@@ -76,3 +76,4 @@ doing:
 ::
 
     ./bin/python setup.py test
+

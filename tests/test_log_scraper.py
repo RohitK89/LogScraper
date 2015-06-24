@@ -3,13 +3,14 @@ Unit-tests for the Log Scraper library
 '''
 
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timedelta
 from StringIO import StringIO
-import unittest
+import gzip
 import os
 import shutil
 import socket
 import sys
+import unittest
 
 BASE_PATH = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir))
 sys.path.append(BASE_PATH)
@@ -26,23 +27,21 @@ LOG_FILE_REGEX = r'log\d+'
 
 #Log files
 LOG_FILE_1 = ("log1.log",
-              '''
-My name is Judge.
+'''My name is Judge.
 My name is Franklin.
 Judge my name?
 My name is Judge.
-              '''
+'''
              )
 LOG_FILE_2 = ("log2.log",
-              '''
-The weather is sunny.
+'''The weather is sunny.
 The time is noon.
 My name is Judge.
 What's my name?
 My name is Franklin.
 The weather is rainy.
 The weather is icy.
-              '''
+'''
              )
 # Remote coyping needs full path
 REMOTE_LOG_FILE_PATH = os.path.join(BASE_PATH, 'logs', LOG_FILE_1[0])
@@ -82,6 +81,7 @@ class LogScraperWithOptions(LogScraper):
         default_filepath[LSC.DEFAULT_PATH] = LOG_DIR
         default_filepath[LSC.DEFAULT_FILENAME] = LOG_FILE
         optional_params[LSC.DAYS_BEFORE_ARCHIVING] = 1
+        optional_params[LSC.LEVELS_TO_BOXES] = {'this_box' : socket.gethostname()}
 
         super(LogScraperWithOptions, self).__init__(default_filepath=default_filepath,
                                                     optional_params=optional_params,
@@ -126,9 +126,24 @@ class TestLogScraper(unittest.TestCase):
         '''Test the no-nonsense simple scraper'''
 
         _log_scraper = LogScraper()
+        expected = ("LogScraper(default_filename=, default_filepath=, "
+                    "optional_params={'levels_to_boxes': {}, 'filename_regex': '', "
+                    "'processor_count': 4, 'local_copy_lifetime': 0, 'tmp_path': '', "
+                    "'force_copy': False, 'days_before_archiving': 0}, user_params={}")
+        self.assertEquals(repr(_log_scraper), expected)
+
+        expected = ("Regexes: []\n"
+                    "Default filename: \n"
+                    "Default filepath: \n"
+                    "Optional params: {'levels_to_boxes': {}, 'filename_regex': '', "
+                    "'processor_count': 4, 'local_copy_lifetime': 0, 'tmp_path': '', "
+                    "'force_copy': False, 'days_before_archiving': 0}\n"
+                    "User params: {}")
+        self.assertEquals(str(_log_scraper), expected)
 
         #Set file list
         user_params = {}
+        user_params[LSC.DEBUG] = True
         user_params[LSC.FILENAME] = os.path.join(LOG_DIR, LOG_FILE)
         _log_scraper.set_user_params(user_params)
 
@@ -137,6 +152,12 @@ class TestLogScraper(unittest.TestCase):
         group_regex = r'The (?P<key>\w+) is (?P<value>\w+)\.$'
         _log_scraper.add_regex(name='name_is_judge', pattern=no_group_regex)
         _log_scraper.add_regex(name='key_value_regex', pattern=group_regex)
+
+        # Validate user params (should do nothing)
+        _log_scraper._validate_user_params()
+        
+        # Should give back nothing
+        self.assertEquals(_log_scraper._get_archived_file_path(), None)
 
         #Finally, get some data
         results = _log_scraper.get_log_data()
@@ -169,6 +190,15 @@ class TestLogScraper(unittest.TestCase):
         self.assertDictEqual(results, expected)
 
         # Test the min/max/avg
+        # Test with no data
+        stats = _log_scraper._calc_stats([])
+        expected = {'max_key': 0,
+                    'max_count': 0,
+                    'avg_count': 0,
+                    'min_count': 0,
+                    'min_key': 0}
+        self.assertDictEqual(stats, expected)
+
         stats = _log_scraper._calc_stats(results['regexes']['key_value_regex'][LSC.GROUP_HITS]['key'])
         expected = {'max_key': 'weather',
                     'max_count': 3,
@@ -178,16 +208,31 @@ class TestLogScraper(unittest.TestCase):
         self.assertDictEqual(stats, expected)
 
         # Test viewing regex hits
-        out = StringIO()
-        _log_scraper.view_regex_hits(out=out)
-        expected = ('My name is Judge.\n'
-                    'My name is Judge.\n'
-                    'The weather is sunny.\n'
-                    'The time is noon.\n'
-                    'My name is Judge.\n'
-                    'The weather is rainy.\n'
-                    'The weather is icy.\n')
-        self.assertEqual(out.getvalue(), expected)
+        matches = _log_scraper.get_regex_matches()
+        self.assertEquals(len(matches), 2)
+        self.assertEquals(matches[0][LSC.FILENAME], os.path.join(LOG_DIR, LOG_FILE_1[0]))
+        self.assertEquals(len(matches[0][LSC.REGEXES]['key_value_regex'][LSC.MATCHES]), 0)
+        self.assertEquals(len(matches[0][LSC.REGEXES]['name_is_judge'][LSC.MATCHES]), 2)
+        self.assertEquals(matches[1][LSC.FILENAME], os.path.join(LOG_DIR, LOG_FILE_2[0]))
+        self.assertEquals(len(matches[1][LSC.REGEXES]['key_value_regex'][LSC.MATCHES]), 4)
+        self.assertEquals(len(matches[1][LSC.REGEXES]['name_is_judge'][LSC.MATCHES]), 1)
+
+    def test_no_match_regex(self):
+        '''How regexes that don't match anything are handled'''
+
+        _log_scraper = LogScraper()
+
+        #Set file list
+        user_params = {}
+        user_params[LSC.FILENAME] = os.path.join(LOG_DIR, LOG_FILE)
+        _log_scraper.set_user_params(user_params)
+
+        #Add some regexes
+        no_group_regex = r'This should not match\.$'
+        _log_scraper.add_regex(name='no_match', pattern=no_group_regex)
+
+        results = _log_scraper.get_log_data()
+        self.assertEquals(results[LSC.REGEXES]['no_match'][LSC.TOTAL_HITS], 0)
 
     def test_archived_scraping(self):
         '''Test the scraper that fetches archived files'''
@@ -276,6 +321,7 @@ class TestLogScraper(unittest.TestCase):
                        LSC.FILENAME : REMOTE_LOG_FILE_PATH}
         user_params[LSC.DEBUG] = True
 
+        # Test SSHing with correct values
         optional_params = {LSC.TMP_PATH : TMP_REMOTE_DIR,
                            LSC.LOCAL_COPY_LIFETIME : 1,
                            LSC.LEVELS_TO_BOXES : {'this_box' : socket.gethostname()},
@@ -286,12 +332,141 @@ class TestLogScraper(unittest.TestCase):
                                   user_params=user_params,
                                   optional_params=optional_params)
 
-        _log_scraper.get_log_data()
+        file_list = _log_scraper._get_file_list()
+        for scraper_file in file_list:
+            _log_scraper._get_log_file(scraper_file)
+
+        expected_files = []
         for filename in [REMOTE_FILE_1, REMOTE_FILE_2]:
-            self.assertTrue(os.path.exists(os.path.join(TMP_REMOTE_DIR,
-                                                        '_'.join(['this_box',
-                                                                  filename]))))
+            tmp_file = os.path.join(TMP_REMOTE_DIR, '_'.join(['this_box', filename]))
+            self.assertTrue(os.path.exists(tmp_file))
+            expected_files.append(tmp_file)
+
+        # Store the modification time of the locally copied file.
+        # We're going to repeat the copy operation, and since the file is new,
+        # there should be no recopying
+        mtimes = []
+        for filepath in expected_files:
+            mtimes.append(os.path.getmtime(filepath))
+
+        copied_files = []
+        for scraper_file in file_list:
+            copied_files.append(_log_scraper._get_log_file(scraper_file))
+
+        self.assertEquals(expected_files, copied_files)
+
+        # Compare mtimes
+        copied_mtimes = []
+        for filepath in copied_files:
+            copied_mtimes.append(os.path.getmtime(filepath))
+
+        self.assertEquals(mtimes, copied_mtimes)
+
+        # Test copying remote files when local copy is out of date
+        optional_params[LSC.LOCAL_COPY_LIFETIME] = 0
+        _log_scraper = LogScraper(default_filepath=default_filepath,
+                                  user_params=user_params,
+                                  optional_params=optional_params)
+
+        file_list = _log_scraper._get_file_list()
+        copied_files = []
+        for scraper_file in file_list:
+            copied_files.append(_log_scraper._get_log_file(scraper_file))
+
+        self.assertEquals(expected_files, copied_files)
+
+        # Compare mtimes
+        copied_mtimes = []
+        for filepath in copied_files:
+            copied_mtimes.append(os.path.getmtime(filepath))
+
+        self.assertNotEqual(mtimes, copied_mtimes)
+
+        # Test SSHing with bad box name
+        optional_params = {LSC.TMP_PATH : TMP_REMOTE_DIR,
+                           LSC.LOCAL_COPY_LIFETIME : 1,
+                           LSC.LEVELS_TO_BOXES : {'this_box' : 'bad_box'},
+                           LSC.FILENAME_REGEX : LOG_FILE_REGEX,
+                           LSC.FORCE_COPY : True}
+
+        _log_scraper = LogScraper(default_filepath=default_filepath,
+                                  user_params=user_params,
+                                  optional_params=optional_params)
+
+        self.assertEquals(_log_scraper.get_log_data(), None)
+        for filename in [REMOTE_FILE_1, REMOTE_FILE_2]:
+            tmp_file = os.path.join(TMP_REMOTE_DIR, '_'.join(['bad_box', filename]))
+            self.assertFalse(os.path.exists(tmp_file))
+
         shutil.rmtree(TMP_REMOTE_DIR)
+
+    def test_file_path_creation(self):
+        '''Run the file path creation logic through its paces'''
+
+        # No default paths, so no path should be made
+        _log_scraper = LogScraper()
+        self.assertEquals(_log_scraper._make_file_path(), '')
+
+        # Test with default filepath
+        default_filepath = {}
+        default_filepath[LSC.DEFAULT_PATH] = os.path.join(BASE_PATH, 'logs')
+        default_filepath[LSC.DEFAULT_FILENAME] = LOG_FILE
+        _log_scraper = LogScraper(default_filepath=default_filepath)
+        log_file_parts = LOG_FILE.split('.')
+        expected = os.path.join(BASE_PATH, 'logs', LOG_FILE)
+        self.assertEquals(_log_scraper._make_file_path(), expected)
+
+        # Test with date and non-archival
+        user_params = {}
+        test_date = datetime.today().strftime('%Y%m%d')
+        user_params[LSC.DATE] = test_date
+        _option_scraper = LogScraperWithOptions(user_params=user_params)
+        expected = os.path.join(LOG_DIR,
+                                '.'.join(['-'.join([log_file_parts[0], test_date]),
+                                          log_file_parts[1]]))
+        self.assertEquals(_option_scraper._make_file_path(), expected)
+
+        # Non-archival with box name and no date
+        user_params = {LSC.LEVEL : 'this_box'}
+
+        optional_params = {LSC.LEVELS_TO_BOXES : {'this_box' : socket.gethostname()},
+                           LSC.FILENAME_REGEX : LOG_FILE_REGEX}
+        _log_scraper = LogScraper(default_filepath=default_filepath,
+                                  optional_params=optional_params,
+                                  user_params=user_params)
+        expected = os.path.join(BASE_PATH, 'logs',
+                                '.'.join(['-'.join([log_file_parts[0], socket.gethostname()]),
+                                          log_file_parts[1]]))
+        self.assertEquals(_log_scraper._make_file_path(), expected)
+
+        # Non-archival with box name and date
+        user_params = {LSC.LEVEL : 'this_box',
+                       LSC.DATE : test_date}
+
+        optional_params = {LSC.LEVELS_TO_BOXES : {'this_box' : socket.gethostname()},
+                           LSC.FILENAME_REGEX : LOG_FILE_REGEX}
+        _log_scraper = LogScraper(default_filepath=default_filepath,
+                                  optional_params=optional_params,
+                                  user_params=user_params)
+        expected = os.path.join(BASE_PATH, 'logs',
+                                '.'.join(['-'.join([log_file_parts[0], socket.gethostname(),
+                                                    test_date]),
+                                          log_file_parts[1]]))
+        self.assertEquals(_log_scraper._make_file_path(), expected)
+
+        # Archival with box name and date
+        test_date = datetime.today() - timedelta(2)
+        test_date = test_date.strftime('%Y%m%d')
+        user_params = {LSC.LEVEL : 'this_box',
+                       LSC.DATE : test_date}
+
+        _option_scraper = LogScraperWithOptions(user_params=user_params)
+        expected = os.path.join(LOG_DIR, ARCHIVE_DIR,
+                                '.'.join(['-'.join([log_file_parts[0], socket.gethostname(),
+                                                    test_date]),
+                                          log_file_parts[1] + '*']))
+        self.assertEquals(_option_scraper._make_file_path(), expected)
+
 
     def test_bad_filepath(self):
         '''Create a log scraper with a bad filepath'''
@@ -307,6 +482,7 @@ class TestLogScraper(unittest.TestCase):
         _log_scraper.set_user_params(user_params)
         #Should return None as no files should be found
         self.assertEqual(_log_scraper.get_log_data(), None)
+        self.assertEqual(_log_scraper.get_regex_matches(), None)
 
     def test_good_filepath(self):
         '''Create a log scraper with a good filepath'''
@@ -333,6 +509,104 @@ class TestLogScraper(unittest.TestCase):
                                                'total_hits': 2}},
                                    'filename': './logs/log2.log'}]}
         self.assertDictEqual(results, expected)
+
+
+    def test_printing(self):
+        '''Test the functions that print stuff out'''
+        _log_scraper = LogScraper()
+        out = StringIO()
+        _log_scraper.print_total_stats(None, out=out)
+        self.assertEquals(out.getvalue(), '')
+
+        _log_scraper.print_stats_per_file(None, out=out)
+        self.assertEquals(out.getvalue(), '')
+
+        #Set file list
+        user_params = {}
+        user_params[LSC.FILENAME] = os.path.join(LOG_DIR, LOG_FILE)
+        _log_scraper.set_user_params(user_params)
+
+        #Add some regexes
+        no_group_regex = r'My name is Judge\.$'
+        _log_scraper.add_regex(name='name_is_judge', pattern=no_group_regex)
+
+        # Test printing without debug mode
+        results = _log_scraper.get_log_data()
+        _log_scraper.print_total_stats(results, out=out)
+        expected = '\x1b[94m\x1b[0m\x1b[92mTotal hits for regex Name_is_judge: 3\n\x1b[0m'
+        self.assertEquals(out.getvalue(), expected)
+
+        out.close()
+        out = StringIO()
+
+        _log_scraper.print_stats_per_file(results, out=out)
+        expected = 'File: ./logs/log1.log\n\x1b[94m\x1b[0mFile: ./logs/log2.log\n\x1b[94m\x1b[0m'
+        self.assertEquals(out.getvalue(), expected)
+
+        # Test printing with debug mode
+        out.close()
+        out = StringIO()
+
+        user_params[LSC.DEBUG] = True
+        _log_scraper.set_user_params(user_params)
+
+        results = _log_scraper.get_log_data()
+        _log_scraper.print_total_stats(results, out=out)
+        expected = ('\x1b[94m\nTotal Name_is_judge hits: 3\n\x1b[0m\x1b[92m'
+                    'Total hits for regex Name_is_judge: 3\n\x1b[0m')
+        self.assertEquals(out.getvalue(), expected)
+
+        out.close()
+        out = StringIO()
+
+        _log_scraper.print_stats_per_file(results, out=out)
+        expected = ('File: ./logs/log1.log\n\x1b[94m\n'
+                    'Total Name_is_judge hits: 2\n\x1b[0m'
+                    'File: ./logs/log2.log\n\x1b[94m\n'
+                    'Total Name_is_judge hits: 1\n\x1b[0m')
+        self.assertEquals(out.getvalue(), expected)
+
+        # Test printing regex matches
+        _log_scraper.add_regex(name='no_match', pattern='No match')
+        results = _log_scraper.get_regex_matches()
+        out.close()
+        out = StringIO()
+        expected = ('Regex: no_match\n'
+                    'Matches:\n'
+                    './logs/log1.log-No matches\n'
+                    'Regex: name_is_judge\n'
+                    'Matches:\n'
+                    './logs/log1.log-My name is Judge.\n'
+                    './logs/log1.log-My name is Judge.\n'
+                    'Regex: no_match\n'
+                    'Matches:\n'
+                    './logs/log2.log-No matches\n'
+                    'Regex: name_is_judge\n'
+                    'Matches:\n'
+                    './logs/log2.log-My name is Judge.\n')
+        _log_scraper.view_regex_matches(out=out)
+        self.assertEquals(out.getvalue(), expected)
+
+    def test_file_reading(self):
+        '''Test the opening and reading of files'''
+
+        _log_scraper = LogScraperWithOptions({})
+        # Test regular files
+        contents = LOG_FILE_1[1].splitlines(True)
+        cntr = 0
+        for line in _log_scraper._gen_lines(os.path.join(LOG_DIR, LOG_FILE_1[0])):
+            self.assertEquals(line, contents[cntr])
+            cntr += 1
+
+        # Test gzip files
+        zip_file = os.path.join(LOG_DIR, LOG_FILE_2[0] + '.gz')
+        with gzip.open(zip_file, 'wb') as handle:
+            handle.write(LOG_FILE_2[1])
+        contents = LOG_FILE_2[1].splitlines(True)
+        cntr = 0
+        for line in _log_scraper._gen_lines(zip_file):
+            self.assertEquals(line, contents[cntr])
+            cntr += 1
 
     def tearDown(self):
         '''Remove any temp files'''

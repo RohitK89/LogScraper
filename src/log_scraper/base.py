@@ -42,7 +42,7 @@ import threading
 import time
 import types
 import warnings
-import src.log_scraper.consts as LSC
+import log_scraper.consts as LSC
 
 # C'est la vie...
 warnings.filterwarnings('ignore', category=CryptoRuntimeWarning)
@@ -250,25 +250,27 @@ class LogScraper(object):
             regex_hits[LSC.REGEXES][regex.name] = {}
             regex_hits[LSC.REGEXES][regex.name][LSC.GROUP_HITS] = {}
             for group in regex.get_groups():
-                regex_hits[LSC.REGEXES][regex.name][LSC.GROUP_HITS][group] = collections.OrderedDict()
+                regex_hits[LSC.REGEXES][regex.name][LSC.GROUP_HITS][group] = \
+                    collections.OrderedDict()
 
         if self._user_params.get(LSC.DEBUG):
             self._print_regex_patterns()
 
-        results = self._multiprocess_files()
+        results = self._multiprocess_files(self._process_file_for_aggregates)
 
         if results is None:
             return None
 
         for result in results:
-            for regex_name, group_hits in result[LSC.REGEXES].items():
-                self._combine_group_hits(group_hits, regex_hits[LSC.REGEXES][regex_name])
+            for regex_name, hits in result[LSC.REGEXES].items():
+                self._combine_hits(hits, regex_hits[LSC.REGEXES][regex_name])
 
         #Sort the group data
         for hits in regex_hits[LSC.REGEXES].values():
             if LSC.GROUP_HITS in hits:
                 for group, group_hits in hits[LSC.GROUP_HITS].items():
-                    hits[LSC.GROUP_HITS][group] = collections.OrderedDict(sorted(group_hits.iteritems()))
+                    hits[LSC.GROUP_HITS][group] = \
+                        collections.OrderedDict(sorted(group_hits.iteritems()))
 
         if len(results) > 1:
             regex_hits[LSC.FILE_HITS] = results
@@ -279,41 +281,9 @@ class LogScraper(object):
         '''Returns the list of regexes stored'''
         return self._regexes
 
-    def get_user_params(self):
-        '''Getter for user_params'''
-        return self._user_params
-
-    def print_stats_per_file(self, regex_hits):
-        '''Prints stats for each file separately'''
-        if regex_hits is None:
-            return
-        for result in regex_hits[LSC.FILE_HITS]:
-            print 'File: {}\n'.format(result[LSC.FILENAME])
-            self._pretty_print(result[LSC.REGEXES], self._user_params)
-
-    def print_total_stats(self, regex_hits):
-        '''Prints the total stats'''
-        if regex_hits is None:
-            return
-        self._pretty_print(regex_hits[LSC.REGEXES], self._user_params)
-        for regex_name, hits in regex_hits[LSC.REGEXES].items():
-            print self.COLORS['GREEN']
-            print 'Total hits for regex {}: {:,}'.format(regex_name.capitalize(),
-                                                         hits[LSC.TOTAL_HITS])
-        print self.COLORS['ENDC']
-
-
-    def set_user_params(self, user_params):
+    def get_regex_matches(self):
         '''
-        Setter for the user params
-        Throws: InvalidArgumentException
-        '''
-        self._user_params = user_params
-        self._validate_user_params()
-
-    def view_regex_hits(self, out=sys.stdout):
-        '''
-        Prints out all lines that match all regexes on all files
+        Returns a dict with all the regex matches found for each file
         '''
 
         #Make sure there's some files to run on
@@ -326,28 +296,57 @@ class LogScraper(object):
 
         if self._user_params.get(LSC.DEBUG, None):
             self._print_regex_patterns()
-        for logfile in self._file_list:
-            self._print_regex_matches(logfile, out)
+        matches = self._multiprocess_files(self._process_file_for_matches)
+        return matches
+
+    def get_user_params(self):
+        '''Getter for user_params'''
+        return self._user_params
+
+    def print_stats_per_file(self, regex_hits, out=sys.stdout):
+        '''Prints stats for each file separately'''
+        if regex_hits is None:
+            return
+        for result in regex_hits[LSC.FILE_HITS]:
+            out.write('File: {}\n'.format(result[LSC.FILENAME]))
+            self._pretty_print(result[LSC.REGEXES], self._user_params, out)
+
+    def print_total_stats(self, regex_hits, out=sys.stdout):
+        '''Prints the total stats'''
+        if regex_hits is None:
+            return
+        self._pretty_print(regex_hits[LSC.REGEXES], self._user_params, out)
+        for regex_name, hits in regex_hits[LSC.REGEXES].items():
+            out.write(self.COLORS['GREEN'])
+            out.write('Total hits for regex {}: {:,}\n'.format(regex_name.capitalize(),
+                                                               hits[LSC.TOTAL_HITS]))
+        out.write(self.COLORS['ENDC'])
+
+
+    def set_user_params(self, user_params):
+        '''
+        Setter for the user params
+        Throws: InvalidArgumentException
+        '''
+        self._user_params = user_params
+        self._validate_user_params()
+
+    def view_regex_matches(self, out=sys.stdout):
+        '''
+        Prints out all the lines that match the regexes in the file list properly
+        '''
+        matches = self.get_regex_matches()
+        for file_matches in matches:
+            for regex_name, regex_data in file_matches[LSC.REGEXES].items():
+                out.write('Regex: {}\n'.format(regex_name))
+                out.write('Matches:\n')
+                if regex_data[LSC.MATCHES] == []:
+                    out.write('{}-No matches\n'.format(file_matches[LSC.FILENAME]))
+                else:
+                    for match in regex_data[LSC.MATCHES]:
+                        out.write('{}-{}'.format(file_matches[LSC.FILENAME], match))
 
 # private:
-
-# Methods you should implement for your own scraper
-    def _init_regexes(self):
-        '''This is where you write the logic for what regexes to run'''
-        pass
-
-
-    def _get_archived_file_path(self):
-        '''Should return where your archived files live'''
-        pass
-
-    def _validate_user_params(self):
-        '''
-        Make sure that all user-given values make sense.
-        Should throw InvalidArgumentException with a descriptive message otherwise.
-        Call this in your derived class constructor.'''
-        pass
-######
 
     def _init_base_logger(self):
         '''Creates the base logger'''
@@ -387,6 +386,23 @@ class LogScraper(object):
         for param, default in LSC.OPTIONAL_PARAMS.items():
             self._optional_params[param] = opt.get(param, default)
 
+# Methods you should implement for your own scraper
+    def _init_regexes(self):
+        '''This is where you write the logic for what regexes to run'''
+        pass
+
+
+    def _get_archived_file_path(self):
+        '''Should return where your archived files live'''
+        pass
+
+    def _validate_user_params(self):
+        '''
+        Make sure that all user-given values make sense.
+        Should throw InvalidArgumentException with a descriptive message otherwise.
+        Call this in your derived class constructor.'''
+        pass
+
     def _are_logs_archived(self, log_date):
         '''
         Returns whether logs are on netapp or on local box.
@@ -400,7 +416,7 @@ class LogScraper(object):
         date_obj = date(int(log_date[:-4]), int(log_date[-4:-2]), int(log_date[-2:]))
 
         delta = today - date_obj
-        if delta.days > self._optional_params[LSC.DAYS_BEFORE_ARCHIVING]:
+        if delta.days >= self._optional_params[LSC.DAYS_BEFORE_ARCHIVING]:
             return True
 
         return False
@@ -431,7 +447,7 @@ class LogScraper(object):
         return ret_dict
 
     @classmethod
-    def _combine_group_hits(cls, match_groups, combining_dict):
+    def _combine_hits(cls, match_groups, combining_dict):
         '''
         Aggregates all matches for each key found in match_groups
         into combining_dict
@@ -439,10 +455,7 @@ class LogScraper(object):
 
         for group, hits in match_groups.items():
             if isinstance(hits, collections.Mapping):
-                if combining_dict.get(group, None) is None:
-                    combining_dict[group] = {}
-
-                cls._combine_group_hits(match_groups[group], combining_dict[group])
+                cls._combine_hits(match_groups[group], combining_dict[group])
             else:
                 if combining_dict.get(group, None):
                     combining_dict[group] += hits
@@ -511,8 +524,9 @@ class LogScraper(object):
                     return file_list
                 with contextlib.closing(ssh):
                     with contextlib.closing(ssh.open_sftp()) as sftp:
-                        filename_regex = self._make_file_name(self._optional_params[LSC.FILENAME_REGEX],
-                                                              log_date, level)
+                        filename_regex = \
+                            self._make_file_name(self._optional_params[LSC.FILENAME_REGEX],
+                                                 log_date, level)
 
                         files = sftp.listdir(self._default_path)
                         for name in files:
@@ -612,8 +626,11 @@ class LogScraper(object):
             parts.append(log_date)
         return '-'.join(parts) + self._default_ext
 
-    def _multiprocess_files(self):
-        '''Creates a pool to run through several files at once'''
+    def _multiprocess_files(self, func):
+        '''
+        Creates a pool to run the given function func
+        through several files at once.
+        '''
 
         pool = Pool(processes=self._optional_params[LSC.PROCESSOR_COUNT])
         pool.daemon = True
@@ -622,7 +639,8 @@ class LogScraper(object):
         if (self._user_params.get(LSC.LEVEL, None)
                 and not self._are_logs_archived(self._user_params.get(LSC.DATE, None))):
             if (self._optional_params.get(LSC.FORCE_COPY, False)
-                or socket.gethostname() != self._get_box_from_level(self._user_params.get(LSC.LEVEL, None))):
+                    or socket.gethostname() != \
+                      self._get_box_from_level(self._user_params.get(LSC.LEVEL, None))):
                 # Why is there a crazy timeout value at the end of this call?
                 # Because python has a bug in it that's been open for years and has not been fixed
                 # outside of v3.3 and above, wherein a KeyboardInterruption is never delivered
@@ -644,7 +662,7 @@ class LogScraper(object):
 
         pool = Pool(processes=self._optional_params[LSC.PROCESSOR_COUNT])
         pool.daemon = True
-        results = pool.map_async(self._process_file, self._file_list).get(TIMEOUT)
+        results = pool.map_async(func, self._file_list).get(TIMEOUT)
         pool.close()
         pool.join()
         return results
@@ -671,26 +689,26 @@ class LogScraper(object):
         return None
 
     @classmethod
-    def _pretty_print(cls, result, options):
+    def _pretty_print(cls, result, options, out=sys.stdout):
         '''
         Pretty prints the stats
         '''
 
-        print cls.COLORS["BLUE"]
-        if options[LSC.DEBUG]:
+        out.write(cls.COLORS["BLUE"])
+        if options.get(LSC.DEBUG):
             for regex_name, hits in result.items():
                 regex_name = regex_name.capitalize()
                 for group, group_hits in hits[LSC.GROUP_HITS].items():
                     if group == LSC.TOTAL_HITS:
                         continue
-                    print '\n{} hits per {}:'.format(regex_name, group.capitalize())
+                    out.write('\n{} hits per {}:\n'.format(regex_name, group.capitalize()))
                     cls._pretty_print_dict(group_hits)
-                    print '\n{} max, min and average:'.format(regex_name)
+                    out.write('\n{} max, min and average:\n'.format(regex_name))
                     cls._print_max_min_avg(group, cls._calc_stats(group_hits))
 
-                print '\nTotal {} hits: {:,}'.format(regex_name, hits[LSC.TOTAL_HITS])
+                out.write('\nTotal {} hits: {:,}\n'.format(regex_name, hits[LSC.TOTAL_HITS]))
 
-        print cls.COLORS['ENDC']
+        out.write(cls.COLORS['ENDC'])
 
     @classmethod
     def _pretty_print_dict(cls, results):
@@ -700,38 +718,25 @@ class LogScraper(object):
         if results is None:
             return
         for key, val in results.iteritems():
-            print "{} : {}".format(key, val)
+            print "{} : {}\n".format(key, val)
 
     @classmethod
     def _print_max_min_avg(cls, group, stats):
         '''Prints the min, max and average stats'''
-        print '\nAggregator: {}'.format(group)
-        print '\nMax requests processed : {:,}, stat value: {}'.format(stats[LSC.MAX_COUNT],
-                                                                       stats[LSC.MAX_KEY])
-        print 'Min requests processed : {:,}, stat value: {}'.format(stats[LSC.MIN_COUNT],
-                                                                     stats[LSC.MIN_KEY])
-        print 'Average requests processed : {:,}'.format(stats[LSC.AVG_COUNT])
+        print '\nAggregator: {}\n'.format(group)
+        print '\nMax requests processed : {:,}, stat value: {}\n'.format(stats[LSC.MAX_COUNT],
+                                                                         stats[LSC.MAX_KEY])
+        print 'Min requests processed : {:,}, stat value: {}\n'.format(stats[LSC.MIN_COUNT],
+                                                                       stats[LSC.MIN_KEY])
+        print 'Average requests processed : {:,}\n'.format(stats[LSC.AVG_COUNT])
 
     def _print_regex_patterns(self):
         '''Prints all the regex patterns'''
         for regex in self._regexes:
             LOGGER.debug('Running regex: %s', regex.get_pattern())
 
-    def _print_regex_matches(self, logfile, out=sys.stdout):
-        '''
-        Runs a given regex on contents of given file and prints any found matches
-        '''
-        try:
-            for line in self._gen_lines(logfile):
-                for regex in self._regexes:
-                    match = regex.get_matcher().search(line)
-                    if match is not None:
-                        out.write(line)
-        except AttributeError as err:
-            LOGGER.error('Regex Exception %s: %s, Line %s', type(err), err, line)
-
-    def _process_file(self, log_file):
-        '''Extracts the data from the given log_file and returns.
+    def _process_file_for_matches(self, log_file):
+        '''Extracts all regex matches in the given log file and returns.
            Override if you need to run several regexes or do any special
            processing on the files.'''
 
@@ -739,30 +744,52 @@ class LogScraper(object):
         with self._get_file_handle(log_file) as file_handle:
             for regex in self._regexes:
                 regex_hits[LSC.REGEXES][regex.name] = {}
-                regex_hits[LSC.REGEXES][regex.name][LSC.TOTAL_HITS] = 0
-                regex_hits[LSC.REGEXES][regex.name][LSC.GROUP_HITS] = {}
-                for group in regex.get_groups():
-                    regex_hits[LSC.REGEXES][regex.name][LSC.GROUP_HITS][group] = {}
+                regex_hits[LSC.REGEXES][regex.name][LSC.MATCHES] = []
 
             for line in file_handle:
                 for regex in self._regexes:
-                    hits = regex_hits[LSC.REGEXES][regex.name][LSC.GROUP_HITS]
-                    regex_hits[LSC.REGEXES][regex.name][LSC.TOTAL_HITS] += self._run_regex(line,
-                                                                                           regex.get_matcher(),
-                                                                                           hits)
-            #Sort the group data
-            for hits in regex_hits[LSC.REGEXES].values():
-                for group, group_hits in hits[LSC.GROUP_HITS].items():
-                    hits[LSC.GROUP_HITS][group] = collections.OrderedDict(sorted(group_hits.iteritems()))
+                    matcher = regex.get_matcher()
+                    if matcher.match(line) != None:
+                        regex_hits[LSC.REGEXES][regex.name][LSC.MATCHES].append(line)
+
+        return regex_hits
+
+
+    def _process_file_for_aggregates(self, log_file):
+        '''Extracts the data from the given log_file and returns.
+           Override if you need to run several regexes or do any special
+           processing on the files.'''
+
+        regex_hits = {LSC.FILENAME : log_file, LSC.REGEXES : {}}
+        for regex in self._regexes:
+            regex_hits[LSC.REGEXES][regex.name] = {}
+            regex_hits[LSC.REGEXES][regex.name][LSC.TOTAL_HITS] = 0
+            regex_hits[LSC.REGEXES][regex.name][LSC.GROUP_HITS] = {}
+            for group in regex.get_groups():
+                regex_hits[LSC.REGEXES][regex.name][LSC.GROUP_HITS][group] = {}
+
+        for line in self._gen_lines(log_file):
+            for regex in self._regexes:
+                group_hits = regex_hits[LSC.REGEXES][regex.name][LSC.GROUP_HITS]
+                regex_hits[LSC.REGEXES][regex.name][LSC.TOTAL_HITS] += \
+                    self._run_regex_and_do_aggregation(line,
+                                                       regex.get_matcher(),
+                                                       group_hits)
+        #Sort the group data
+        for hits in regex_hits[LSC.REGEXES].values():
+            for group, group_hits in hits[LSC.GROUP_HITS].items():
+                hits[LSC.GROUP_HITS][group] = \
+                    collections.OrderedDict(sorted(group_hits.iteritems()))
 
         return regex_hits
 
     @classmethod
-    def _run_regex(cls, line, matcher, aggregators):
+    def _run_regex_and_do_aggregation(cls, line, matcher, aggregators):
         '''
         Given the text and a regular expression,
-        gives back a dict of regex matches found, with the key as a feed
-        and the value as the count of matches for that feed.
+        adds found values for each regex group to the aggregators dict,
+        and returns 1.
+        If no match is found, returns 0
         '''
         try:
             match = matcher.match(line)

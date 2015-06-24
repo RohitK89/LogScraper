@@ -61,6 +61,7 @@ PRINT_STATS = 'print_stats'
 
 # The keys used in the dicts that store the extracted data
 REGEXES = 'regexes'
+MATCHES = 'matches'
 GROUP_HITS = 'group_hits'
 TOTAL_HITS = 'total_hits'
 

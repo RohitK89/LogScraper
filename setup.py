@@ -5,7 +5,7 @@ with open('README.txt') as file:
 
 setup(
     name                ='log_scraper',
-    version             ='0.9.5',
+    version             ='0.9.6',
     install_requires    =['paramiko'],
     package_dir         ={'': 'src'},
     packages            =find_packages('src'),
@@ -27,7 +27,7 @@ setup(
     license             ='Simplified BSD License',
     platforms           =['UNIX', 'OS X', 'Windows'],
     url                 ='https://github.com/RohitK89/LogScraper/',
-    download_url        ='https://github.com/RohitK89/LogScraper/tarball/0.9.4',
+    download_url        ='https://github.com/RohitK89/LogScraper/tarball/0.9.6',
     keywords            =['log scraper','logs','regex','stats','grep'],
     test_suite          ='run_tests.main',
     tests_require       =['coverage', 'nose']
