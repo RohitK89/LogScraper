@@ -632,15 +632,16 @@ class LogScraper(object):
         through several files at once.
         '''
 
-        pool = Pool(processes=self._optional_params[LSC.PROCESSOR_COUNT])
-        pool.daemon = True
-
         # First copy any remote files as needed and create final file list
         if (self._user_params.get(LSC.LEVEL, None)
                 and not self._are_logs_archived(self._user_params.get(LSC.DATE, None))):
             if (self._optional_params.get(LSC.FORCE_COPY, False)
                     or socket.gethostname() != \
                       self._get_box_from_level(self._user_params.get(LSC.LEVEL, None))):
+                pool = Pool(processes=self._optional_params[LSC.PROCESSOR_COUNT])
+                result = pool.map_async(self._get_log_file, self._file_list)
+                pool.close()
+                pool.join()
                 # Why is there a crazy timeout value at the end of this call?
                 # Because python has a bug in it that's been open for years and has not been fixed
                 # outside of v3.3 and above, wherein a KeyboardInterruption is never delivered
@@ -649,10 +650,9 @@ class LogScraper(object):
                 # However, if you set a timeout on the call, Condition.wait() will receive
                 # the interrupt immediately.
                 # See: http://stackoverflow.com/questions/1408356/keyboard-interrupts-with-pythons-multiprocessing-pool
-                file_list = pool.map_async(self._get_log_file, self._file_list).get(TIMEOUT)
-                pool.close()
-                pool.join()
+                file_list = result.get(TIMEOUT)
                 self._file_list = sorted(filter(lambda x: x != '', file_list))
+                result = pool = None
 
         LOGGER.debug('Final file list: %s', self._file_list)
 
@@ -661,10 +661,10 @@ class LogScraper(object):
             return None
 
         pool = Pool(processes=self._optional_params[LSC.PROCESSOR_COUNT])
-        pool.daemon = True
-        results = pool.map_async(func, self._file_list).get(TIMEOUT)
+        result = pool.map_async(func, self._file_list)
         pool.close()
         pool.join()
+        results = result.get(TIMEOUT)
         return results
 
     @classmethod
